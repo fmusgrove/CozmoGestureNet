@@ -29,22 +29,22 @@ def worker(input_queue, output_queue, cap_params, frame_processed):
         # print("> ===== in worker loop, frame ", frame_processed)
         frame = input_queue.get()
         if frame is not None:
-            # Actual detection. Variable boxes contains the bounding box cordinates for hands detected,
+            # Actual detection. Variable boxes contains the bounding box coordinates for hands detected,
             # while scores contains the confidence for each of these boxes.
-            # Hint: If len(boxes) > 1 , you may assume you have found atleast one hand (within your score threshold)
+            # Hint: If len(boxes) > 1 , you may assume you have found at least one hand (within your score threshold)
 
             boxes, scores = detector_utils.detect_objects(
                 frame, detection_graph, sess)
             # draw bounding boxes
-            detector_utils.draw_box_on_image(
+            roi_bounds = detector_utils.draw_box_on_image(
                 cap_params['num_hands_detect'], cap_params["score_thresh"],
                 scores, boxes, cap_params['im_width'], cap_params['im_height'],
                 frame)
             # add frame annotated with bounding box to queue
-            output_queue.put(frame)
+            output_queue.put((frame, roi_bounds))
             frame_processed += 1
         else:
-            output_queue.put(frame)
+            output_queue.put((frame, None))
     sess.close()
 
 
@@ -132,6 +132,7 @@ if __name__ == '__main__':
     index = 0
 
     cv2.namedWindow('Multi-Threaded Detection', cv2.WINDOW_NORMAL)
+    cv2.namedWindow('Isolated Hand', cv2.WINDOW_NORMAL)
 
     cozmo_thread = Thread(target=image_grab.run_cozmo_photostream, daemon=True).start()
 
@@ -156,7 +157,7 @@ if __name__ == '__main__':
             index += 1
 
             input_q.put(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            output_frame = output_q.get()
+            output_frame, bounds = output_q.get()
 
             output_frame = cv2.cvtColor(output_frame, cv2.COLOR_RGB2BGR)
 
@@ -167,6 +168,12 @@ if __name__ == '__main__':
 
             if output_frame is not None:
                 if args.display > 0:
+                    if bounds is not None:
+                        if len(bounds) > 0:
+                            # isolated_hand = output_frame[y1:y2, x1:x2]
+                            p1, p2 = bounds[0]
+                            isolated_hand = output_frame[p1[1]:p2[1], p1[0]:p2[0]]
+                            cv2.imshow('Isolated Hand', isolated_hand)
                     if args.fps > 0:
                         detector_utils.draw_fps_on_image("FPS : " + str(int(fps)),
                                                          output_frame)
@@ -185,6 +192,6 @@ if __name__ == '__main__':
                 break
     elapsed_time = (datetime.datetime.now() - start_time).total_seconds()
     fps = num_frames / elapsed_time
-    print("fps", fps)
+    print('Ending FPS:', fps)
     pool.terminate()
     cv2.destroyAllWindows()
