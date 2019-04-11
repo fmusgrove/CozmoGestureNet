@@ -11,7 +11,7 @@ from HandDetector.utils import label_map_util
 detection_graph = tf.Graph()
 sys.path.append("..")
 
-MODEL_NAME = 'hand_inference_graph'
+MODEL_NAME = 'HandDetector/hand_inference_graph'
 # Path to frozen detection graph. This is the actual model that is used for the object detection.
 PATH_TO_CKPT = MODEL_NAME + '/frozen_inference_graph.pb'
 # List of the strings that is used to add correct label for each box.
@@ -43,22 +43,41 @@ def load_inference_graph():
 
 # draw the detected bounding boxes on the images
 # You can modify this to also draw a label.
-def draw_box_on_image(num_hands_detect, score_thresh, scores, boxes, im_width, im_height, image_np):
-    bounds = []
+def draw_box_on_image(image_np, bounds):
+    for i in range(len(bounds)):
+        p1, p2 = bounds[i][:2]
+        cv2.rectangle(image_np, p1, p2, (77, 255, 9), 3, 1)
+
+
+def get_segmentation_bounds(num_hands_detect, score_thresh, scores, boxes, im_width, im_height):
+    """
+    Return the segmentation bounding box coordinates
+    :param num_hands_detect: number of hands to detect
+    :param score_thresh:
+    :param scores:
+    :param boxes:
+    :param im_width: width of the image
+    :param im_height: height of the image
+    :return: list containing coordinate pair tuples
+    """
+    bounds_scores = []
     for i in range(num_hands_detect):
         if scores[i] > score_thresh:
             (left, right, top, bottom) = (boxes[i][1] * im_width, boxes[i][3] * im_width,
                                           boxes[i][0] * im_height, boxes[i][2] * im_height)
             p1 = (int(left), int(top))
             p2 = (int(right), int(bottom))
-            cv2.rectangle(image_np, p1, p2, (77, 255, 9), 3, 1)
-            bounds.append((p1, p2))
-    return bounds
+            bounds_scores.append((p1, p2, scores[i]))
+    return bounds_scores
 
 
 # Show fps value on image.
-def draw_fps_on_image(fps, image_np):
-    cv2.putText(image_np, fps, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (77, 255, 9), 2)
+def draw_fps_on_image(fps_text, image_np):
+    cv2.putText(image_np, fps_text, (0, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (77, 255, 9), 2)
+
+
+def draw_score_on_image(score_text, image_np):
+    cv2.putText(image_np, score_text, (0, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (77, 255, 9), 2)
 
 
 # Generate scores and bounding boxes given an image
