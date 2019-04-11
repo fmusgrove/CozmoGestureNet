@@ -11,7 +11,7 @@ class CozmoPhotoStream:
     def __init__(self):
         self.robot: cozmo.robot.Robot = None
         self.cubes = []
-        camera_image = Image.open('../res/FaceImages/camera.png').resize(cozmo.oled_face.dimensions(), Image.BICUBIC)
+        camera_image = Image.open('res/FaceImages/camera.png').resize(cozmo.oled_face.dimensions(), Image.BICUBIC)
         self.face_image = cozmo.oled_face.convert_image_to_screen_data(camera_image, invert_image=True)
         self.latest_image: Image = None
 
