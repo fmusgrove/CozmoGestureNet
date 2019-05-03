@@ -14,7 +14,11 @@ class CozmoController:
         self.robot: cozmo.robot.Robot = None
         self.cubes = []
         camera_image = Image.open('res/FaceImages/camera.png').resize(cozmo.oled_face.dimensions(), Image.BICUBIC)
-        self.face_image = cozmo.oled_face.convert_image_to_screen_data(camera_image, invert_image=True)
+        fist_image = Image.open('res/FaceImages/fist.png').resize(cozmo.oled_face.dimensions(), Image.BICUBIC)
+        ok_image = Image.open('res/FaceImages/ok.png').resize(cozmo.oled_face.dimensions(), Image.BICUBIC)
+        self.camera_image = cozmo.oled_face.convert_image_to_screen_data(camera_image, invert_image=True)
+        self.fist_image = cozmo.oled_face.convert_image_to_screen_data(fist_image, invert_image=True)
+        self.ok_image = cozmo.oled_face.convert_image_to_screen_data(ok_image, invert_image=True)
         self.latest_image: Image = None
         self.command_run_lock: Lock = Lock()
         self.command_q: Queue = Queue(maxsize=1)
@@ -35,7 +39,15 @@ class CozmoController:
         print('Command received:', command)
         if command == 'claw':
             await self.robot.play_anim(name='anim_codelab_frightenedcozmo_01').wait_for_completed()
-        await self.robot_say(command.replace('_', ' '))
+        elif command == 'fist':
+            await self.robot_say('Fist bump!')
+            await self.robot.display_oled_face_image(self.fist_image, 2000, in_parallel=True).wait_for_completed()
+        elif command == 'ok':
+            await self.robot_say('Ok!')
+            await self.robot.display_oled_face_image(self.ok_image, 2000, in_parallel=True).wait_for_completed()
+        else:
+            pass
+            await self.robot_say(command.replace('_', ' '))
 
     async def run(self):
         # Turn backpack lights to RED
@@ -53,7 +65,7 @@ class CozmoController:
         # Add event handler to process each image as it becomes available
         # self.robot.camera.add_event_handler(cozmo.robot.camera.EvtNewRawCameraImage, self.on_camera_image)
 
-        self.robot.display_oled_face_image(self.face_image, 2000, in_parallel=True)
+        self.robot.display_oled_face_image(self.camera_image, 2000, in_parallel=True)
 
         # await self.robot_say('Awaiting commands')
 
