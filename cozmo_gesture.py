@@ -2,37 +2,43 @@ import argparse
 import datetime
 from multiprocessing import Queue, Pool
 from threading import Thread
+from collections import Counter
+from time import sleep, time
 
 import cv2
-import numpy
+import numpy as np
 import tensorflow as tf
 
-from HandDetector import image_grab
+from Common.cozmo_controller import cozmo_controller, run_cozmo_controller
 from HandDetector.utils import detector_utils as detector_utils
+from ModelBuilder.data_preprocess import LABEL_NAMES, process_image_for_model
 
 frame_processed = 0
-score_thresh = 0.15
-image_burst_max_saved = 25
+score_thresh = 0.6
+image_burst_max_saved = 64
 
 
-# Create a worker thread that loads graph and
+# Create a detect_worker thread that loads graph and
 # does detection on images in an input queue and puts it on an output queue
 
-
-def worker(input_queue, output_queue, cap_params, frame_processed):
-    print(">> loading frozen model for worker")
-    detection_graph, sess = detector_utils.load_inference_graph()
+def detect_worker(input_queue, output_queue, cap_params, frame_processed):
+    """
+    Function endpoint for
+    :param input_queue:
+    :param output_queue:
+    :param cap_params:
+    :param frame_processed:
+    :return:
+    """
+    print('>> Loading frozen model for detection worker')
+    detection_graph, sess = detector_utils.load_detect_graph()
     sess = tf.Session(graph=detection_graph)
     while True:
-        # print("> ===== in worker loop, frame ", frame_processed)
+        # print("> ===== in detect_worker loop, frame ", frame_processed)
         frame = input_queue.get()
         if frame is not None:
-            # Actual detection. Variable boxes contains the bounding box coordinates for hands detected,
-            # while scores contains the confidence for each of these boxes.
-            # Hint: If len(boxes) > 1 , you may assume you have found at least one hand (within your score threshold)
-
-            boxes, scores = detector_utils.detect_objects(
-                frame, detection_graph, sess)
+            # Run hand segmentation detection
+            boxes, scores = detector_utils.detect_objects(frame, detection_graph, sess)
 
             # Get bounding boxes for the hands
             roi_bounds = detector_utils.get_segmentation_bounds(cap_params['num_hands_detect'],
@@ -42,20 +48,38 @@ def worker(input_queue, output_queue, cap_params, frame_processed):
             # Isolate the first hand
             if len(roi_bounds) > 0:
                 p1, p2, hand_score = roi_bounds[0]
-                hand = frame[p1[1]:p2[1], p1[0]:p2[0]].copy()
+                hand: np.ndarray = frame[p1[1]:p2[1], p1[0]:p2[0]].copy()
             else:
                 hand = None
                 hand_score = 0
 
-            # draw bounding boxes
+            # Draw bounding boxes
             detector_utils.draw_box_on_image(frame, roi_bounds)
 
-            # add frame annotated with bounding box to queue
+            # Add frame annotated with bounding box to queue
             output_queue.put((frame, hand, hand_score))
             frame_processed += 1
         else:
             output_queue.put((frame, None, 0))
     sess.close()
+
+
+def classification_worker(input_queue, output_queue):
+    print('>> Loading frozen model for classification worker')
+    classification_model: tf.keras.models.Model = tf.keras.models.load_model(
+        'Models/hand_class_graph/optimized_classification_graph.model')
+
+    while True:
+        img_frame = input_queue.get()
+        if img_frame is not None:
+            processed_image = process_image_for_model(img_frame)
+            prediction = classification_model.predict([processed_image])
+            # print(prediction)
+            confidence_score = np.amax(prediction[0])
+            if confidence_score > 0.92:
+                label_index = int(np.argmax(prediction[0]))
+                # Add frame with classification to the output queue
+                output_queue.put((np.squeeze(processed_image), LABEL_NAMES[label_index]))
 
 
 if __name__ == '__main__':
@@ -133,10 +157,21 @@ if __name__ == '__main__':
         default='NullClass',
         help='Name of the class to add to the recognition model.'
     )
+    parser.add_argument(
+        '-sn',
+        '--starting-number',
+        dest='class_starting_number',
+        type=int,
+        default=0,
+        help='Starting number for the images to be saved (to avoid overwriting images already collected)'
+    )
     args = parser.parse_args()
 
-    input_q = Queue(maxsize=args.queue_size)
-    output_q = Queue(maxsize=args.queue_size)
+    detector_input_q = Queue(maxsize=args.queue_size)
+    detector_output_q = Queue(maxsize=args.queue_size)
+
+    classification_input_q = Queue(maxsize=args.queue_size)
+    classification_output_q = Queue(maxsize=args.queue_size)
 
     cap_params = {}
     frame_processed = 0
@@ -148,45 +183,57 @@ if __name__ == '__main__':
 
     print(cap_params, args)
 
-    # spin up workers to parallelize detection.
-    pool = Pool(args.num_workers, worker,
-                (input_q, output_q, cap_params, frame_processed))
+    # spin up parallelized detection workers
+    detect_pool = Pool(args.num_workers, detect_worker,
+                       (detector_input_q, detector_output_q, cap_params, frame_processed))
+
+    if args.data_collect_mode:
+        cv2.namedWindow('Isolated Hand', cv2.WINDOW_AUTOSIZE)
+        classification_pool = None
+    else:
+        cv2.namedWindow('Classification Model View', cv2.WINDOW_NORMAL)
+        classification_pool = Pool(args.num_workers, classification_worker,
+                                   (classification_input_q, classification_output_q))
+
+    cv2.namedWindow('Multi-Threaded Detection', cv2.WINDOW_NORMAL)
 
     start_time = datetime.datetime.now()
     num_frames = 0
     fps = 0
     index = 0
 
-    cv2.namedWindow('Multi-Threaded Detection', cv2.WINDOW_NORMAL)
-    cv2.namedWindow('Isolated Hand', cv2.WINDOW_AUTOSIZE)
+    # Start the Cozmo management thread
+    cozmo_thread = Thread(target=run_cozmo_controller, daemon=True).start()
 
-    cozmo_thread = Thread(target=image_grab.run_cozmo_photostream, daemon=True).start()
-
-    print('Waiting for image')
+    output_frame: np.ndarray
+    isolated_hand: np.ndarray
     image_burst_count = 0
-    image_burst_total = 0
+    image_burst_total = args.class_starting_number
     should_save_images = False
+    top_classes_received = []
+    num_classes_expected_time = 1
+    last_time_val = time()
     x = 0
+    print('Waiting for image')
     while True:
-        # Wait for a new image to be available from Cozmo
-        # wait_for_image = image_grab.photo_stream.image_available.wait()
-
-        # Grab the image and clear the event
-        frame = image_grab.photo_stream.latest_image
-        # image_grab.photo_stream.image_available.clear()
+        # Grab the latest image off Cozmo's camera
+        frame = cozmo_controller.latest_image
 
         if frame is not None:
             # Convert the frame from a PIL image to an OpenCV image format
-            frame = numpy.array(frame)
+            frame = np.array(frame)
 
             # Convert from RGB to BGR
             frame = frame[:, :, ::-1].copy()
 
+            # Flip the frame across the vertical axis for more natural perspective
             frame = cv2.flip(frame, 1)
+
             index += 1
 
-            input_q.put(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            output_frame, isolated_hand, hand_score = output_q.get()
+            detector_input_q.put(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+
+            output_frame, isolated_hand, hand_score = detector_output_q.get()
 
             output_frame = cv2.cvtColor(output_frame, cv2.COLOR_RGB2BGR)
 
@@ -197,13 +244,18 @@ if __name__ == '__main__':
 
             if output_frame is not None:
                 if isolated_hand is not None:
-                    # isolated_hand = cv2.cvtColor(isolated_hand, cv2.COLOR_RGB2BGR)
-                    # Convert to greyscale
-                    isolated_hand = cv2.cvtColor(isolated_hand, cv2.COLOR_RGB2GRAY)
+                    try:
+                        # Convert to greyscale and add to the classification queue
+                        isolated_hand = cv2.cvtColor(isolated_hand, cv2.COLOR_RGB2GRAY)
+                        if not args.data_collect_mode:
+                            classification_input_q.put(isolated_hand)
+                    except Exception as e:
+                        print('Error converting to grayscale:', e)
                     if should_save_images:
                         if not (image_burst_count % image_burst_max_saved == 0) or image_burst_count == 0:
                             # Save the image to the dataset folder
-                            cv2.imwrite(f'res/TrainingData/{args.class_name}/{image_burst_total}.png', isolated_hand)
+                            cv2.imwrite(f'res/TrainingData/raw/{args.class_name}/{image_burst_total}.png',
+                                        isolated_hand)
                             image_burst_count += 1
                             image_burst_total += 1
                         else:
@@ -216,9 +268,9 @@ if __name__ == '__main__':
                         detector_utils.draw_fps_on_image(f'FPS: {int(fps)}', output_frame)
                     if args.data_collect_mode:
                         detector_utils.draw_score_on_image(f'Score: {round(float(hand_score), 2)}', output_frame)
+                        if isolated_hand is not None:
+                            cv2.imshow('Isolated Hand', isolated_hand)
                     cv2.imshow('Multi-Threaded Detection', output_frame)
-                    if isolated_hand is not None:
-                        cv2.imshow('Isolated Hand', isolated_hand)
                     if args.data_collect_mode and cv2.waitKey(1) & 0xFF == ord('s'):
                         should_save_images = True
                     if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -233,8 +285,37 @@ if __name__ == '__main__':
             else:
                 # print("video end")
                 break
+
+        if not args.data_collect_mode:
+            if time() - last_time_val > 2:
+                # Expect to receive as many classifications as the current fps in one second to surpass the
+                # threshold and trigger the action on Cozmo
+                num_classes_expected_time = max(1, int(fps * 0.5))
+                last_time_val = time()
+                top_classes_received.clear()
+                print(f'Cleared, expecting at least {num_classes_expected_time} triggers in 2 second')
+
+            if not classification_output_q.empty():
+                processed_class_frame, predicted_class = classification_output_q.get()
+                top_classes_received.append(predicted_class)
+
+                # Count the top classes received and only react to the most prevalent classification to
+                # smooth the output (linked to the fps to scale with performance)
+                if len(top_classes_received) > num_classes_expected_time:
+                    top_class = Counter(top_classes_received).most_common(1)[0][0]
+                    top_classes_received.clear()
+
+                    # Pass command on to Cozmo (only if he isn't already reacting to a command
+                    if cozmo_controller.command_q.empty() and not cozmo_controller.command_run_lock.locked():
+                        cozmo_controller.command_q.put(top_class)
+
+                if args.display > 0:
+                    cv2.imshow('Classification Model View', processed_class_frame)
+
     elapsed_time = (datetime.datetime.now() - start_time).total_seconds()
     fps = num_frames / elapsed_time
     print('Ending FPS:', fps)
-    pool.terminate()
+    detect_pool.terminate()
+    if classification_pool is not None:
+        classification_pool.terminate()
     cv2.destroyAllWindows()
