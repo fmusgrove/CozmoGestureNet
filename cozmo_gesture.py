@@ -14,7 +14,7 @@ from HandDetector.utils import detector_utils as detector_utils
 from ModelBuilder.data_preprocess import LABEL_NAMES, process_image_for_model
 
 frame_processed = 0
-score_thresh = 0.6
+score_thresh = 0.4
 image_burst_max_saved = 64
 
 
@@ -49,6 +49,8 @@ def detect_worker(input_queue, output_queue, cap_params, frame_processed):
             if len(roi_bounds) > 0:
                 p1, p2, hand_score = roi_bounds[0]
                 hand: np.ndarray = frame[p1[1]:p2[1], p1[0]:p2[0]].copy()
+                if not all([arr_size != 0 for arr_size in hand.shape]):
+                    hand = None
             else:
                 hand = None
                 hand_score = 0
@@ -67,7 +69,7 @@ def detect_worker(input_queue, output_queue, cap_params, frame_processed):
 def classification_worker(input_queue, output_queue):
     print('>> Loading frozen model for classification worker')
     classification_model: tf.keras.models.Model = tf.keras.models.load_model(
-        'Models/hand_class_graph/optimized_classification_graph.model')
+        'Models/hand_class_graph/optimized_classification_graph_v2.model')
 
     while True:
         img_frame = input_queue.get()
@@ -91,14 +93,14 @@ if __name__ == '__main__':
         dest='video_source',
         type=int,
         default=0,
-        help='Device index of the camera.')
+        help='Device index of the camera')
     parser.add_argument(
         '-nhands',
         '--num_hands',
         dest='num_hands',
         type=int,
         default=2,
-        help='Max number of hands to detect.')
+        help='Max number of hands to detect')
     parser.add_argument(
         '-fps',
         '--fps',
@@ -112,14 +114,14 @@ if __name__ == '__main__':
         dest='width',
         type=int,
         default=320,
-        help='Width of the frames in the video stream.')
+        help='Width of the frames in the video stream')
     parser.add_argument(
         '-ht',
         '--height',
         dest='height',
         type=int,
         default=240,
-        help='Height of the frames in the video stream.')
+        help='Height of the frames in the video stream')
     parser.add_argument(
         '-ds',
         '--display',
@@ -147,7 +149,7 @@ if __name__ == '__main__':
         dest='data_collect_mode',
         type=bool,
         default=False,
-        help='Data collection mode for adding classes to the recognition model.'
+        help='Data collection mode for adding classes to the recognition model'
     )
     parser.add_argument(
         '-cn',
@@ -155,7 +157,7 @@ if __name__ == '__main__':
         dest='class_name',
         type=str,
         default='NullClass',
-        help='Name of the class to add to the recognition model.'
+        help='Name of the class to add to the recognition model'
     )
     parser.add_argument(
         '-sn',
@@ -251,18 +253,18 @@ if __name__ == '__main__':
                             classification_input_q.put(isolated_hand)
                     except Exception as e:
                         print('Error converting to grayscale:', e)
-                    if should_save_images:
-                        if not (image_burst_count % image_burst_max_saved == 0) or image_burst_count == 0:
-                            # Save the image to the dataset folder
-                            cv2.imwrite(f'res/TrainingData/raw/{args.class_name}/{image_burst_total}.png',
-                                        isolated_hand)
-                            image_burst_count += 1
-                            image_burst_total += 1
-                        else:
-                            # Stop collecting images if the maximum has been reached
-                            should_save_images = False
-                            image_burst_count = 0
-                            print(f'{image_burst_total} total images saved')
+                if should_save_images:
+                    if not (image_burst_count % image_burst_max_saved == 0) or image_burst_count == 0:
+                        # Save the image to the dataset folder
+                        cv2.imwrite(f'res/TrainingData/raw/{args.class_name}/{image_burst_total}.png',
+                                    isolated_hand)
+                        image_burst_count += 1
+                        image_burst_total += 1
+                    else:
+                        # Stop collecting images if the maximum has been reached
+                        should_save_images = False
+                        image_burst_count = 0
+                        print(f'{image_burst_total} total images saved')
                 if args.display > 0:
                     if args.fps > 0:
                         detector_utils.draw_fps_on_image(f'FPS: {int(fps)}', output_frame)
@@ -273,6 +275,7 @@ if __name__ == '__main__':
                     cv2.imshow('Multi-Threaded Detection', output_frame)
                     if args.data_collect_mode and cv2.waitKey(1) & 0xFF == ord('s'):
                         should_save_images = True
+                        print(f'Now saving {image_burst_max_saved} images')
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         break
                 else:
@@ -280,20 +283,18 @@ if __name__ == '__main__':
                         num_frames = 0
                         start_time = datetime.datetime.now()
                     else:
-                        print("frames processed: ", index, "elapsed time: ",
-                              elapsed_time, "fps: ", str(int(fps)))
+                        print(f'frames processed: {index} elapsed time: {elapsed_time} FPS: {int(fps)}')
             else:
-                # print("video end")
                 break
 
         if not args.data_collect_mode:
-            if time() - last_time_val > 2:
+            if time() - last_time_val > 3:
                 # Expect to receive as many classifications as the current fps in one second to surpass the
                 # threshold and trigger the action on Cozmo
-                num_classes_expected_time = max(1, int(fps * 0.5))
+                num_classes_expected_time = max(1, int(fps * 0.8))
                 last_time_val = time()
                 top_classes_received.clear()
-                print(f'Cleared, expecting at least {num_classes_expected_time} triggers in 2 second')
+                print(f'Cleared, expecting at least {num_classes_expected_time} triggers in 3 second')
 
             if not classification_output_q.empty():
                 processed_class_frame, predicted_class = classification_output_q.get()
