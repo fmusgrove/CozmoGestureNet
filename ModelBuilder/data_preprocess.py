@@ -10,7 +10,7 @@ from sklearn.model_selection import train_test_split
 
 RAW_DATA_DIR = '../res/TrainingData/raw/'
 
-LABEL_NAMES = ['fist', 'open_hand', 'peace_sign', 'ok', 'claw', 'letter_y', 'letter_k', 'letter_w']
+LABEL_NAMES = ['fist', 'open_hand', 'letter_y', 'peace_sign']
 IMG_WIDTH = 100
 IMG_HEIGHT = 120
 
@@ -64,8 +64,8 @@ def test_predictions():
     Function to quickly test a single prediction made by the classification model
     :return:
     """
-    CLASS_TO_TEST = 'peace_sign'
-    IMAGE_NUMBER = 340
+    CLASS_TO_TEST = 'letter_y'
+    IMAGE_NUMBER = 120
     MODEL_NAME = 'optimized_classification_graph.model'
 
     classification_model: tf.keras.models.Model = tf.keras.models.load_model(f'../Models/hand_class_graph/{MODEL_NAME}')
